@@ -216,19 +216,22 @@ class MainActivity : Activity() {
 
         val headline: String
         val message: String
+        // Техническая строка показывается только на экране: вслух её читать незачем,
+        // а вот понять по ней, что за служба стоит на телефоне, можно сразу.
+        var detail: String? = null
         when (error) {
             KeshaFailure.NO_SERVICE -> {
                 headline = "Микрофон не работает"
                 message = "На этом телефоне нет службы распознавания речи. " +
                     "Скажите, пожалуйста, тому, кто устанавливал приложение."
+                detail = technical()
             }
 
             KeshaFailure.NOT_RESPONDING -> {
                 headline = "Микрофон не отвечает"
-                // Число служб в скобках — для настройки, не для человека.
                 message = "Служба распознавания речи не отвечает. " +
-                    "Попробуйте, пожалуйста, ещё раз или перезапустите приложение. " +
-                    "(служб: ${listener.serviceCount()})"
+                    "Попробуйте, пожалуйста, ещё раз или перезапустите приложение."
+                detail = technical()
             }
 
             KeshaFailure.SILENT_MIC -> {
@@ -276,7 +279,15 @@ class MainActivity : Activity() {
         dischargeAnswer()
         ui.showAnswer(headline)
         sayQuietly(message)
+        detail?.let { ui.showHint("$message\n[$it]") }
     }
+
+    /**
+     * Строка для отладки на чужом телефоне: сколько служб распознавания нашлось
+     * и какие именно. Без неё причину «служба не отвечает» не отличить от «службы нет».
+     */
+    private fun technical(): String =
+        "служб: ${listener.serviceCount()} — ${listener.serviceNames()}"
 
     // --- Ответ --------------------------------------------------------------
 

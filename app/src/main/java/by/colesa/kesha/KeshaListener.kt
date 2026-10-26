@@ -73,6 +73,26 @@ internal class KeshaListener(
     fun isAvailable(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
 
     /**
+     * Пакеты служб распознавания, которые видит приложение.
+     *
+     * Нужно для диагностики: если служба в системе есть, но на запуск записи не
+     * отвечает, важно знать, какая именно. Имя пакета сразу показывает, Google это,
+     * служба прошивки или что-то постороннее.
+     */
+    fun serviceNames(): String = try {
+        @Suppress("DEPRECATION")
+        val list = context.packageManager
+            .queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
+        if (list.isEmpty()) {
+            "нет"
+        } else {
+            list.mapNotNull { it.serviceInfo?.packageName }.distinct().sorted().joinToString(", ")
+        }
+    } catch (e: Exception) {
+        "ошибка"
+    }
+
+    /**
      * Заранее подключается к службе распознавания.
      *
      * Это не оптимизация, а лечение ошибки: `SpeechRecognizer.startListening()`
@@ -81,14 +101,15 @@ internal class KeshaListener(
      * Вызываем заранее, чтобы к моменту нажатия связь уже была установлена.
      */
     fun warmUp() {
-        if (recognizer == null) create()
+        if (recognizer == null) recognizer = create()
     }
 
     /** Идёт ли запись прямо сейчас. Нужно, чтобы экран не залип в состоянии «говорю». */
     fun isActive(): Boolean = listening
 
     fun start() {
-        val service = recognizer ?: create()
+        if (recognizer == null) recognizer = create()
+        val service = recognizer
         if (service == null) {
             Log.w(TAG, "createSpeechRecognizer вернул null")
             onFailed(KeshaFailure.NO_SERVICE)
@@ -107,15 +128,22 @@ internal class KeshaListener(
      */
     private fun attemptStart() {
         if (!listening) return
+        attempts += 1
+
+        // Первая попытка идёт через прогретый распознаватель. Со второй — пересоздаём:
+        // SpeechRecognizer подключается к службе ровно один раз, и если bindService
+        // не удался, сам он больше не пытается. Повторять startListening по такому
+        // объекту бесполезно — он навсегда остаётся с пустой службой.
+        if (attempts > 1) rebind()
 
         val service = recognizer
         if (service == null) {
+            Log.w(TAG, "распознаватель не создался")
             finishRecording()
             onFailed(KeshaFailure.NO_SERVICE)
             return
         }
 
-        attempts += 1
         try {
             service.startListening(buildIntent())
         } catch (e: Exception) {
@@ -126,12 +154,23 @@ internal class KeshaListener(
         }
 
         if (attempts >= MAX_START_ATTEMPTS) {
-            Log.w(TAG, "служба не отозвалась за $attempts попыток")
+            Log.w(TAG, "служба не отозвалась за $attempts попыток; службы: ${serviceNames()}")
             finishRecording()
             onFailed(KeshaFailure.NOT_RESPONDING)
             return
         }
         scheduleConfirm()
+    }
+
+    /** Пересоздаёт распознаватель, чтобы он заново подключился к службе. */
+    private fun rebind() {
+        val old = recognizer
+        recognizer = null
+        try {
+            old?.destroy()
+        } catch (e: Exception) {
+        }
+        recognizer = create()
     }
 
     private fun scheduleConfirm() {
@@ -209,7 +248,7 @@ internal class KeshaListener(
     }
 
     private fun create(): SpeechRecognizer? = try {
-        SpeechRecognizer.createSpeechRecognizer(context).also { recognizer = it }
+        SpeechRecognizer.createSpeechRecognizer(context)
     } catch (e: Exception) {
         Log.w(TAG, "createSpeechRecognizer не удался", e)
         null
@@ -306,7 +345,7 @@ internal class KeshaListener(
         const val MAX_START_ATTEMPTS = 6
 
         /** Пауза между попытками. */
-        const val START_CONFIRM_MS = 900L
+        const val START_CONFIRM_MS = 1_200L
 
         /** Сколько ждать хоть какого-нибудь звука, прежде чем признать микрофон глухим. */
         const val SILENCE_WATCHDOG_MS = 12_000L
