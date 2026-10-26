@@ -18,16 +18,38 @@ android {
         applicationId = "by.colesa.kesha"
         minSdk = 21
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
+    }
+
+    /**
+     * Постоянный ключ для отладочных сборок, лежит в репозитории.
+     *
+     * Зачем: раннер GitHub Actions одноразовый, и Gradle при каждом запуске создавал
+     * НОВЫЙ отладочный ключ в ~/.android/debug.keystore. Из-за этого два соседних
+     * билда из CI были подписаны по-разному, и новый APK нельзя было поставить поверх
+     * предыдущего — Android отказывал по несовпадению подписи. С постоянным ключом
+     * любая сборка (и CI, и локальная) ставится поверх любой другой.
+     *
+     * ВАЖНО: этот ключ публичный, он лежит в открытом репозитории. Он годится только
+     * для отладки и установки «с рук». Для Google Play нужен отдельный release-ключ,
+     * которого в репозитории быть не должно.
+     */
+    signingConfigs {
+        create("keshaDebug") {
+            storeFile = rootProject.file("keystore/kesha-debug.p12")
+            storePassword = "kesha-debug"
+            keyAlias = "kesha"
+            keyPassword = "kesha-debug"
+        }
     }
 
     buildTypes {
-        // Первый APK — намеренно debug: GitHub Actions собирает его без всякой настройки
-        // подписи, и он же ставится на телефон «как есть».
+        // Первый APK — намеренно debug: он ставится на телефон «как есть».
         debug {
             isMinifyEnabled = false
             isShrinkResources = false
+            signingConfig = signingConfigs.getByName("keshaDebug")
         }
         // Release появится, когда приложение уже заработает: тогда сюда добавятся
         // minify + keystore из Secrets.
