@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Тёплый светлый фон: меньше бликует и легче читается пожилым глазом. -->
+    <color name="kesha_background">#FFFDF8F2</color>
+    <color name="kesha_bar">#FFF1E7DA</color>
+    <color name="kesha_launcher_background">#FF00796B</color>
+</resources>

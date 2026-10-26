@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Базовая тема — системная Material Light без ActionBar (API 21+).
+      Никаких AppCompat/Material Components: они тянут AndroidX и мегабайты.
+    -->
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/kesha_background</item>
+        <item name="android:colorBackground">@color/kesha_background</item>
+        <item name="android:textColorPrimary">#FF1B1B1B</item>
+        <item name="android:textColorSecondary">#FF6E6E6E</item>
+        <item name="android:statusBarColor">@color/kesha_bar</item>
+        <item name="android:navigationBarColor">@color/kesha_bar</item>
+    </style>
+</resources>

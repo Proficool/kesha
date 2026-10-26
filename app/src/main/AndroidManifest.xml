@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Разрешения — только необходимые:
+        INTERNET      — запрос к вебхуку Иннокентия;
+        RECORD_AUDIO  — системное распознавание речи;
+        VIBRATE       — подтверждение «оно меня слышит» (раздел 5 спецификации).
+                        Это normal-разрешение: диалога пользователю не показывают,
+                        запрашивается при установке, веса в APK не имеет.
+
+      ACCESS_NETWORK_STATE намеренно НЕ берём: отсутствие сети определяется
+      по исключению при запросе, а не по опросу системы.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="true" />
+
+    <!--
+      Android 11 (API 30) и выше скрывает от приложения список чужих пакетов.
+      Без этого блока SpeechRecognizer.isRecognitionAvailable() возвращает false
+      на совершенно исправном телефоне с Google-сервисами.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="false"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="false">
+
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density|fontScale"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
