@@ -6,6 +6,8 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.speech.tts.Voice
+import android.util.Log
 import java.util.Locale
 
 /**
@@ -14,6 +16,19 @@ import java.util.Locale
  * В APK не кладём ни одного мегабайта голоса: если русского движка на телефоне нет,
  * сообщаем об этом наружу через [onEngineState] — приложение покажет кнопку установки,
  * а не промолчит (раздел 6.3 спецификации).
+ *
+ * Отдельная забота — **пол голоса**. Иннокентий мужчина, а синтезатор по умолчанию
+ * часто берёт женский голос. Сложность в том, что у [Voice] нет признака пола:
+ * узнать его из API нельзя. Поэтому действуем в два слоя:
+ *
+ *  1. Если у русского голоса в имени есть явная пометка «male»/«female» — берём
+ *     мужской и читаем его естественным тоном.
+ *  2. Если пометки нет (обычный случай), голос не подменяем — остаётся выбранный
+ *     в настройках телефона, — но понижаем тон, чтобы голос звучал ниже.
+ *
+ * Второй слой нужен именно потому, что первый срабатывает не всегда. Отдельного
+ * выбора голоса в приложении нет: если в настройках синтезатора на телефоне выбран
+ * мужской русский голос, приложение подхватит его самó.
  *
  * Все колбэки приходят в главном потоке.
  */
@@ -24,6 +39,7 @@ internal class KeshaSpeaker(
     private val onSpeechEnd: () -> Unit,
 ) {
 
+    private val appContext: Context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
 
     private var engine: TextToSpeech? = null
@@ -32,6 +48,12 @@ internal class KeshaSpeaker(
     private var counter = 0
     private var initRetries = 0
 
+    /** Русские голоса, самые «мужские» — первыми. */
+    private var voices: List<Voice> = emptyList()
+
+    /** Выбранный голос. -1 означает «не подменять голос телефона». */
+    private var voiceIndex = -1
+
     /** Доступен ли русский голос. До инициализации — false. */
     var russianVoiceAvailable = false
         private set
@@ -39,7 +61,7 @@ internal class KeshaSpeaker(
     init {
         // Движок создаём строго в главном потоке: иначе колбэк onInit может прийти
         // раньше, чем конструктор вернёт управление, и поле engine окажется пустым.
-        engine = TextToSpeech(context.applicationContext) { status -> onInit(status) }
+        engine = TextToSpeech(appContext) { status -> onInit(status) }
     }
 
     private fun onInit(status: Int) {
@@ -72,9 +94,15 @@ internal class KeshaSpeaker(
             languageResult != TextToSpeech.LANG_MISSING_DATA &&
                 languageResult != TextToSpeech.LANG_NOT_SUPPORTED
 
+        // Порядок важен: setLanguage сбрасывает выбранный голос, поэтому голос и тон
+        // выставляем после языка.
+        voices = loadRussianVoices(tts)
+        voiceIndex = voices.indexOfFirst { isExplicitlyMale(it) }
+        applyVoice(tts)
+        applyPitch(tts)
+
         // Пожилому человеку диктор должен читать не спеша.
         tts.setSpeechRate(if (russianVoiceAvailable) SPEECH_RATE_RUSSIAN else 1.0f)
-        tts.setPitch(1.0f)
         tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) {
                 main.post { onSpeechStart() }
@@ -93,6 +121,14 @@ internal class KeshaSpeaker(
                 main.post { onSpeechEnd() }
             }
         })
+
+        Log.i(
+            TAG,
+            "голос: русский=$russianVoiceAvailable, русских голосов=${voices.size}, " +
+                "выбран=${describe(voices.getOrNull(voiceIndex))}, " +
+                "тон=${if (isExplicitlyMale(voices.getOrNull(voiceIndex))) 1.0f else MALE_PITCH}, " +
+                "все голоса=${voices.joinToString { describe(it) }}",
+        )
 
         ready = true
         onEngineState(true, russianVoiceAvailable)
@@ -161,10 +197,93 @@ internal class KeshaSpeaker(
         }
     }
 
+    // --- Голоса --------------------------------------------------------------
+
+    private fun loadRussianVoices(tts: TextToSpeech): List<Voice> = try {
+        val all = tts.voices
+        if (all == null) {
+            emptyList()
+        } else {
+            all.filter { it.locale != null && "ru".equals(it.locale.language, true) }
+                .sortedByDescending { masculinity(it) }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "список голосов недоступен", e)
+        emptyList()
+    }
+
+    /**
+     * Насколько голос похож на мужской.
+     *
+     * Пола в [Voice] нет, поэтому опираемся только на явные пометки в имени и
+     * признаках голоса. Коды вроде «rud» намеренно не разгадываем: ошибка здесь
+     * хуже, чем честный ноль, — при нуле голос телефона не подменяется.
+     */
+    private fun masculinity(voice: Voice): Int {
+        if (isExplicitlyFemale(voice)) return -FEMALE_BONUS
+        if (isExplicitlyMale(voice)) return MALE_BONUS
+        return 0
+    }
+
+    private fun isExplicitlyMale(voice: Voice?): Boolean {
+        val name = voice?.name?.lowercase(Locale.ROOT) ?: return false
+        if (name.contains("female")) return false
+        if (name.contains("male")) return true
+        // Некоторые движки кладут пол в список признаков голоса.
+        return voice.features.orEmpty().any { it.lowercase(Locale.ROOT).contains("male") }
+    }
+
+    private fun isExplicitlyFemale(voice: Voice?): Boolean {
+        val name = voice?.name?.lowercase(Locale.ROOT) ?: return false
+        if (name.contains("female")) return true
+        return voice?.features.orEmpty().any { it.lowercase(Locale.ROOT).contains("female") }
+    }
+
+    private fun describe(voice: Voice?): String {
+        if (voice == null) return "голос телефона по умолчанию"
+        val kind = when {
+            isExplicitlyMale(voice) -> "мужской"
+            isExplicitlyFemale(voice) -> "женский"
+            else -> "пол неизвестен"
+        }
+        return "${voice.name} ($kind)"
+    }
+
+    /** Подменяем голос телефона только тогда, когда нашли явно мужской. */
+    private fun applyVoice(tts: TextToSpeech) {
+        val voice = voices.getOrNull(voiceIndex) ?: return
+        try {
+            tts.voice = voice
+        } catch (e: Exception) {
+            Log.w(TAG, "не удалось выбрать голос ${voice.name}", e)
+        }
+    }
+
+    /**
+     * Явно мужской голос читаем его собственным тоном. Если пол определить нельзя,
+     * понижаем тон: так голос звучит ниже и меньше спорит с именем Иннокентий.
+     */
+    private fun applyPitch(tts: TextToSpeech) {
+        val pitch = if (isExplicitlyMale(voices.getOrNull(voiceIndex))) 1.0f else MALE_PITCH
+        try {
+            tts.setPitch(pitch)
+        } catch (e: Exception) {
+        }
+    }
+
     private companion object {
+        const val TAG = "Kesha"
+
         val RUSSIAN: Locale = Locale("ru", "RU")
 
         const val SPEECH_RATE_RUSSIAN = 0.92f
+
+        /** Тон для голоса, пол которого определить не удалось. */
+        const val MALE_PITCH = 0.85f
+
+        const val MALE_BONUS = 100
+        const val FEMALE_BONUS = 100
+
         const val INIT_RETRY_LIMIT = 20
         const val INIT_RETRY_MS = 50L
     }

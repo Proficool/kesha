@@ -3,9 +3,28 @@ package by.colesa.kesha
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
+import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.util.Log
+
+/**
+ * Коды отказов, которых нет в [SpeechRecognizer]: приходят, когда служба распознавания
+ * так и не отозвалась. Лежат отдельно, чтобы MainActivity могла их различить.
+ */
+internal object KeshaFailure {
+    /** Службы распознавания на телефоне нет вовсе (нет Google-сервисов). */
+    const val NO_SERVICE = -1001
+
+    /** Служба есть, но на запуск записи не отвечает. */
+    const val NOT_RESPONDING = -1002
+
+    /** Запись пошла, но микрофон не слышит ни звука — обычно закрыт доступ в прошивке. */
+    const val SILENT_MIC = -1003
+}
 
 /**
  * Обёртка над системным [SpeechRecognizer].
@@ -24,36 +43,143 @@ internal class KeshaListener(
     private val onFailed: (Int) -> Unit,
 ) : RecognitionListener {
 
+    private val main = Handler(Looper.getMainLooper())
+
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
+    private var confirmed = false
+    private var attempts = 0
+    private var confirmTimer: Runnable? = null
+    private var silenceTimer: Runnable? = null
+    private var heardSomething = false
 
     /**
-     * Есть ли на телефоне служба распознавания. Без Google-сервисов (китайские прошивки,
-     * Huawei без GMS) вернёт false — приложение обязано сказать об этом голосом.
+     * Сколько служб распознавания видит приложение.
+     *
+     * На Android 11+ список непустой только потому, что в манифесте объявлен
+     * `<queries><intent><action android:name="android.speech.RecognitionService"/>`.
+     * Без него здесь будет 0, и `SpeechRecognizer` не подключится.
      */
+    fun serviceCount(): Int = try {
+        @Suppress("DEPRECATION")
+        context.packageManager
+            .queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
+            .size
+    } catch (e: Exception) {
+        -1
+    }
+
+    /** Есть ли на телефоне служба распознавания. */
     fun isAvailable(): Boolean = SpeechRecognizer.isRecognitionAvailable(context)
 
-    fun start() {
-        val service = recognizer ?: create()
-        if (service == null) {
-            onFailed(SpeechRecognizer.ERROR_CLIENT)
-            return
-        }
-        listening = true
-        try {
-            service.startListening(buildIntent())
-        } catch (e: Exception) {
-            listening = false
-            onFailed(SpeechRecognizer.ERROR_CLIENT)
-        }
+    /**
+     * Заранее подключается к службе распознавания.
+     *
+     * Это не оптимизация, а лечение ошибки: `SpeechRecognizer.startListening()`
+     * при ещё не подключённой службе **молча ничего не делает** — ни записи,
+     * ни колбэка, ни ошибки. Приложение просто застывает на красной кнопке.
+     * Вызываем заранее, чтобы к моменту нажатия связь уже была установлена.
+     */
+    fun warmUp() {
+        if (recognizer == null) create()
     }
 
     /** Идёт ли запись прямо сейчас. Нужно, чтобы экран не залип в состоянии «говорю». */
     fun isActive(): Boolean = listening
 
+    fun start() {
+        val service = recognizer ?: create()
+        if (service == null) {
+            Log.w(TAG, "createSpeechRecognizer вернул null")
+            onFailed(KeshaFailure.NO_SERVICE)
+            return
+        }
+        listening = true
+        confirmed = false
+        attempts = 0
+        heardSomething = false
+        attemptStart()
+    }
+
+    /**
+     * Повторяет запуск, пока служба не подтвердит готовность через `onReadyForSpeech`.
+     * Без этого молчаливый отказ `startListening()` выглядит для человека как зависание.
+     */
+    private fun attemptStart() {
+        if (!listening) return
+
+        val service = recognizer
+        if (service == null) {
+            finishRecording()
+            onFailed(KeshaFailure.NO_SERVICE)
+            return
+        }
+
+        attempts += 1
+        try {
+            service.startListening(buildIntent())
+        } catch (e: Exception) {
+            Log.w(TAG, "startListening бросил исключение", e)
+            finishRecording()
+            onFailed(KeshaFailure.NOT_RESPONDING)
+            return
+        }
+
+        if (attempts >= MAX_START_ATTEMPTS) {
+            Log.w(TAG, "служба не отозвалась за $attempts попыток")
+            finishRecording()
+            onFailed(KeshaFailure.NOT_RESPONDING)
+            return
+        }
+        scheduleConfirm()
+    }
+
+    private fun scheduleConfirm() {
+        cancelConfirm()
+        val runnable = Runnable {
+            confirmTimer = null
+            if (listening && !confirmed) {
+                Log.i(TAG, "onReadyForSpeech не пришёл, попытка ${attempts + 1}")
+                attemptStart()
+            }
+        }
+        confirmTimer = runnable
+        main.postDelayed(runnable, START_CONFIRM_MS)
+    }
+
+    private fun cancelConfirm() {
+        confirmTimer?.let { main.removeCallbacks(it) }
+        confirmTimer = null
+    }
+
+    /**
+     * Если запись пошла, но за [SILENCE_WATCHDOG_MS] не поймано ни звука — микрофон
+     * закрыт в прошивке (частая история на MIUI и EMUI) либо неисправен.
+     * Молчать об этом нельзя: человек будет ждать ответа в пустоту.
+     */
+    private fun armSilenceWatchdog() {
+        cancelSilenceWatchdog()
+        val runnable = Runnable {
+            silenceTimer = null
+            if (listening && !heardSomething) {
+                Log.w(TAG, "ни одного звука за $SILENCE_WATCHDOG_MS мс")
+                finishRecording()
+                onFailed(KeshaFailure.SILENT_MIC)
+            }
+        }
+        silenceTimer = runnable
+        main.postDelayed(runnable, SILENCE_WATCHDOG_MS)
+    }
+
+    private fun cancelSilenceWatchdog() {
+        silenceTimer?.let { main.removeCallbacks(it) }
+        silenceTimer = null
+    }
+
     /** «Я закончил» — не ждём паузы, но и не выбрасываем уже сказанное. */
     fun stopListening() {
         if (!listening) return
+        cancelConfirm()
         try {
             recognizer?.stopListening()
         } catch (e: Exception) {
@@ -61,6 +187,8 @@ internal class KeshaListener(
     }
 
     fun cancel() {
+        cancelConfirm()
+        cancelSilenceWatchdog()
         listening = false
         try {
             recognizer?.cancel()
@@ -69,6 +197,8 @@ internal class KeshaListener(
     }
 
     fun destroy() {
+        cancelConfirm()
+        cancelSilenceWatchdog()
         listening = false
         val service = recognizer
         recognizer = null
@@ -81,6 +211,7 @@ internal class KeshaListener(
     private fun create(): SpeechRecognizer? = try {
         SpeechRecognizer.createSpeechRecognizer(context).also { recognizer = it }
     } catch (e: Exception) {
+        Log.w(TAG, "createSpeechRecognizer не удался", e)
         null
     }
 
@@ -106,6 +237,8 @@ internal class KeshaListener(
     }
 
     private fun finishRecording() {
+        cancelConfirm()
+        cancelSilenceWatchdog()
         if (!listening) return
         listening = false
         onRecordingStopped()
@@ -120,10 +253,16 @@ internal class KeshaListener(
     // --- RecognitionListener -------------------------------------------------
 
     override fun onReadyForSpeech(params: Bundle?) {
+        confirmed = true
+        cancelConfirm()
+        Log.i(TAG, "запись началась с попытки $attempts")
+        armSilenceWatchdog()
         onRecordingStarted()
     }
 
     override fun onBeginningOfSpeech() {
+        heardSomething = true
+        cancelSilenceWatchdog()
     }
 
     override fun onRmsChanged(rmsdB: Float) {
@@ -137,6 +276,7 @@ internal class KeshaListener(
     }
 
     override fun onError(error: Int) {
+        Log.w(TAG, "onError, код $error")
         finishRecording()
         onFailed(error)
     }
@@ -148,13 +288,27 @@ internal class KeshaListener(
 
     override fun onPartialResults(partialResults: Bundle?) {
         val text = bestText(partialResults)
-        if (text.isNotEmpty()) onPartial(text)
+        if (text.isNotEmpty()) {
+            heardSomething = true
+            cancelSilenceWatchdog()
+            onPartial(text)
+        }
     }
 
     override fun onEvent(eventType: Int, params: Bundle?) {
     }
 
     private companion object {
+        const val TAG = "Kesha"
         const val LANGUAGE = "ru-RU"
+
+        /** Сколько раз пробовать запустить запись, пока служба не отзовётся. */
+        const val MAX_START_ATTEMPTS = 6
+
+        /** Пауза между попытками. */
+        const val START_CONFIRM_MS = 900L
+
+        /** Сколько ждать хоть какого-нибудь звука, прежде чем признать микрофон глухим. */
+        const val SILENCE_WATCHDOG_MS = 12_000L
     }
 }

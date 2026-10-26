@@ -14,6 +14,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.util.Log
 import android.view.WindowManager
 import java.util.UUID
 
@@ -74,6 +75,21 @@ class MainActivity : Activity() {
             onSpeechStart = { },
             onSpeechEnd = { onSpeechEnd() },
         )
+
+        // Подключаемся к службе распознавания заранее, не дожидаясь нажатия кнопки:
+        // startListening() по неподключённой службе молча ничего не делает.
+        listener.warmUp()
+        recognitionAvailable = listener.isAvailable()
+        val services = listener.serviceCount()
+        Log.i(
+            TAG,
+            "старт: распознавание=$recognitionAvailable, служб распознавания=$services, " +
+                "версия Android=${Build.VERSION.SDK_INT}",
+        )
+        if (services == 0) {
+            // Совсем без служб работать нечему: предупреждаем сразу, а не по нажатию.
+            Log.w(TAG, "в системе не найдено ни одной службы распознавания речи")
+        }
 
         ui.setState(KeshaState.IDLE)
         ui.setRepeatEnabled(false)
@@ -146,6 +162,7 @@ class MainActivity : Activity() {
         ui.showListening("")
         ui.showHint("Говорите, я слушаю")
         setState(KeshaState.LISTENING)
+        Log.i(TAG, "запускаю запись")
         listener.start()
         armListenWatchdog()
     }
@@ -200,6 +217,26 @@ class MainActivity : Activity() {
         val headline: String
         val message: String
         when (error) {
+            KeshaFailure.NO_SERVICE -> {
+                headline = "Микрофон не работает"
+                message = "На этом телефоне нет службы распознавания речи. " +
+                    "Скажите, пожалуйста, тому, кто устанавливал приложение."
+            }
+
+            KeshaFailure.NOT_RESPONDING -> {
+                headline = "Микрофон не отвечает"
+                // Число служб в скобках — для настройки, не для человека.
+                message = "Служба распознавания речи не отвечает. " +
+                    "Попробуйте, пожалуйста, ещё раз или перезапустите приложение. " +
+                    "(служб: ${listener.serviceCount()})"
+            }
+
+            KeshaFailure.SILENT_MIC -> {
+                headline = "Я вас не слышу"
+                message = "Я вас не слышу. Проверьте, пожалуйста, что микрофон " +
+                    "не закрыт в настройках телефона, и говорите ближе к нему."
+            }
+
             SpeechRecognizer.ERROR_NO_MATCH,
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
             -> {
@@ -511,6 +548,7 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        const val TAG = "Kesha"
         const val PREFS_NAME = "kesha"
         const val KEY_SESSION_ID = "sessionId"
         const val KEY_LAST_SEEN = "lastSeen"
@@ -519,7 +557,7 @@ class MainActivity : Activity() {
 
         const val REQUEST_AUDIO = 1001
 
-        const val LISTEN_WATCHDOG_MS = 30_000L
+        const val LISTEN_WATCHDOG_MS = 20_000L
         const val LISTEN_STUCK_MS = 4_000L
         const val GREETING_GAP_MS = 15 * 60 * 1000L
 
