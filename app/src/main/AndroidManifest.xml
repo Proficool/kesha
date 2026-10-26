@@ -32,14 +32,6 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
-        <!--
-            Запасной путь распознавания: системное окно «Скажите ваш вопрос».
-            Нужно на прошивках, где прямой SpeechRecognizer не подключается к службе
-            и не присылает ни одного колбэка.
-        -->
-        <intent>
-            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
-        </intent>
     </queries>
 
     <application

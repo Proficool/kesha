@@ -247,8 +247,17 @@ internal class KeshaListener(
         }
     }
 
+    /**
+     * Создаёт распознаватель и **обязательно** подписывает его на себя.
+     *
+     * Без `setRecognitionListener` не работает ничего: служба подключается, исправно
+     * распознаёт речь и шлёт колбэки — но `SpeechRecognizer` передаёт их во внутренний
+     * приёмник, а тот смотрит на `mListener`, который равен `null`, и молча всё
+     * выбрасывает. Ни `onReadyForSpeech`, ни `onError`, ни результата — вообще ничего.
+     * Именно поэтому приложение застывало на красной кнопке, а все сторожа молчали.
+     */
     private fun create(): SpeechRecognizer? = try {
-        SpeechRecognizer.createSpeechRecognizer(context)
+        SpeechRecognizer.createSpeechRecognizer(context).also { it.setRecognitionListener(this) }
     } catch (e: Exception) {
         Log.w(TAG, "createSpeechRecognizer не удался", e)
         null
