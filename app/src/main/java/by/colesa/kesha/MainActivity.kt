@@ -42,6 +42,9 @@ class MainActivity : Activity() {
     private var listenWatchdog: Runnable? = null
     private var speechWatchdog: Runnable? = null
 
+    /** Пока идёт запись, раз в полсекунды обновляет на экране состояние связи со службой. */
+    private var traceTicker: Runnable? = null
+
     private var askAfterPermission = false
     private var requestedThisRun = false
 
@@ -78,6 +81,10 @@ class MainActivity : Activity() {
         // Подключаемся к службе распознавания заранее, не дожидаясь нажатия кнопки:
         // startListening() по неподключённой службе молча ничего не делает.
         listener.warmUp()
+        // И отдельно проверяем своим bindService, подключается ли приложение к службе
+        // вообще. SpeechRecognizer результата подключения не сообщает, а без этой пробы
+        // «не подключились» и «подключились, но служба молчит» неотличимы.
+        listener.probeBind()
         recognitionAvailable = listener.isAvailable()
         val services = listener.serviceCount()
         Log.i(
@@ -160,10 +167,11 @@ class MainActivity : Activity() {
         dischargeAnswer()
 
         ui.showListening("")
-        ui.showHint("Говорите, я слушаю")
+        ui.showHint("Говорите, я слушаю\n" + listener.statusLine())
         setState(KeshaState.LISTENING)
         Log.i(TAG, "запускаю запись")
         listener.start()
+        startTrace()
         armListenWatchdog()
     }
 
@@ -290,8 +298,26 @@ class MainActivity : Activity() {
      * Строка для отладки на чужом телефоне: сколько служб распознавания нашлось
      * и какие именно пакеты. Без неё причину «не работает» не отличить от «службы нет».
      */
-    private fun technical(): String =
-        "служб: ${listener.serviceCount()} — ${listener.serviceNames()}"
+    private fun technical(): String = listener.statusLine()
+
+    /** Обновляет диагностику на экране, пока идёт запись: иначе причина снова утонет. */
+    private fun startTrace() {
+        stopTrace()
+        val runnable = object : Runnable {
+            override fun run() {
+                if (state != KeshaState.LISTENING) return
+                ui.showHint("Говорите, я слушаю\n" + listener.statusLine())
+                main.postDelayed(this, 500L)
+            }
+        }
+        traceTicker = runnable
+        main.postDelayed(runnable, 500L)
+    }
+
+    private fun stopTrace() {
+        traceTicker?.let { main.removeCallbacks(it) }
+        traceTicker = null
+    }
 
     // --- Ответ --------------------------------------------------------------
 
@@ -328,6 +354,7 @@ class MainActivity : Activity() {
 
     private fun setState(next: KeshaState) {
         state = next
+        if (next != KeshaState.LISTENING) stopTrace()
         ui.setState(next)
         // Раздел 5: экран не гаснет, пока идёт разговор.
         keepScreenOn(next != KeshaState.IDLE)

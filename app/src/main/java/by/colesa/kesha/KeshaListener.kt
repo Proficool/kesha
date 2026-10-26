@@ -1,9 +1,12 @@
 package by.colesa.kesha
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.os.Bundle
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognitionService
@@ -52,6 +55,115 @@ internal class KeshaListener(
     private var confirmTimer: Runnable? = null
     private var silenceTimer: Runnable? = null
     private var heardSomething = false
+
+    /** Диагностика: результат собственной пробы подключения к службе. */
+    private var bindResult = "не проверялось"
+
+    /** Диагностика: подключилась ли наша проба. */
+    private var probeConnected = false
+
+    /** Диагностика: сколько колбэков пришло от службы и какой был последним. */
+    private var callbackCount = 0
+    private var lastCallback = "ни одного"
+
+    /**
+     * Проверяет собственным [Context.bindService], подключается ли приложение к службе.
+     *
+     * [SpeechRecognizer] результат подключения не сообщает: при неудаче он остаётся
+     * с пустой службой и молчит так же, как если бы служба подключилась, но не отвечала.
+     * Отличить одно от другого можно только собственной попыткой — ради этого и нужна.
+     */
+    fun probeBind() {
+        val connection = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                probeConnected = true
+                Log.i(TAG, "проба: служба подключилась — $name")
+            }
+
+            override fun onServiceDisconnected(name: ComponentName?) {
+                probeConnected = false
+            }
+        }
+
+        val returned = try {
+            context.bindService(
+                Intent(RecognitionService.SERVICE_INTERFACE),
+                connection,
+                Context.BIND_AUTO_CREATE,
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "проба: bindService бросил исключение", e)
+            false
+        }
+        bindResult = "вызов=$returned"
+        Log.i(TAG, "проба: bindService вернул $returned")
+
+        main.postDelayed({
+            bindResult = "вызов=$returned, соединение=$probeConnected"
+            Log.i(TAG, "проба: итог — $bindResult")
+            try {
+                context.unbindService(connection)
+            } catch (e: Exception) {
+            }
+        }, PROBE_WAIT_MS)
+    }
+
+    /**
+     * Диагностическая строка для экрана — одной строкой.
+     *
+     * Скриншот прислать нельзя, поэтому строку приходится диктовать. Значит, она должна
+     * быть короткой: число служб, короткое имя, итог пробы подключения и счётчик колбэков.
+     */
+    fun statusLine(): String {
+        val callbacks = if (callbackCount == 0) "0" else "$callbackCount ($lastCallback)"
+        return "диаг: служб ${serviceCount()} [${shortServices()}], " +
+            "связь ${bindShort()}, колбэков $callbacks"
+    }
+
+    /** Итог пробы подключения словами, а не полями объекта. */
+    private fun bindShort(): String = when {
+        bindResult.contains("вызов=false") -> "нет"
+        bindResult.contains("соединение=true") -> "да"
+        bindResult.contains("соединение=false") -> "вызов прошёл, связи нет"
+        else -> "проверяется"
+    }
+
+    /**
+     * Короткие имена служб. Продиктовать «com.google.android.googlequicksearchbox»
+     * по телефону невозможно, а «Гугл» — можно.
+     */
+    private fun shortServices(): String = try {
+        @Suppress("DEPRECATION")
+        val list = context.packageManager
+            .queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
+        if (list.isEmpty()) {
+            "нет"
+        } else {
+            list.mapNotNull { it.serviceInfo?.packageName }
+                .distinct()
+                .sorted()
+                .joinToString(",") { shortName(it) }
+        }
+    } catch (e: Exception) {
+        "ошибка"
+    }
+
+    private fun shortName(pkg: String): String = when {
+        pkg.contains("googlequicksearchbox") -> "Гугл"
+        pkg.contains("google.android.tts") -> "РечьГугл"
+        pkg.contains("samsung") -> "Samsung"
+        pkg.contains("xiaomi") || pkg.contains("miui") -> "Xiaomi"
+        pkg.contains("huawei") -> "Huawei"
+        pkg.contains("oppo") || pkg.contains("coloros") -> "Oppo"
+        pkg.contains("vivo") -> "Vivo"
+        else -> pkg
+    }
+
+    private fun note(name: String) {
+        callbackCount += 1
+        lastCallback = name
+        Log.i(TAG, "колбэк #$callbackCount: $name")
+    }
 
     /**
      * Сколько служб распознавания видит приложение.
@@ -273,7 +385,6 @@ internal class KeshaListener(
         putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
-        putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
 
         // Тихая речь с паузами: не обрываем запись на первой же заминке.
         putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
@@ -301,6 +412,7 @@ internal class KeshaListener(
     // --- RecognitionListener -------------------------------------------------
 
     override fun onReadyForSpeech(params: Bundle?) {
+        note("onReadyForSpeech")
         confirmed = true
         cancelConfirm()
         Log.i(TAG, "запись началась с попытки $attempts")
@@ -309,32 +421,39 @@ internal class KeshaListener(
     }
 
     override fun onBeginningOfSpeech() {
+        note("onBeginningOfSpeech")
         heardSomething = true
         cancelSilenceWatchdog()
     }
 
     override fun onRmsChanged(rmsdB: Float) {
+        note("onRmsChanged")
     }
 
     override fun onBufferReceived(buffer: ByteArray?) {
+        note("onBufferReceived")
     }
 
     override fun onEndOfSpeech() {
+        note("onEndOfSpeech")
         finishRecording()
     }
 
     override fun onError(error: Int) {
+        note("onError($error)")
         Log.w(TAG, "onError, код $error")
         finishRecording()
         onFailed(error)
     }
 
     override fun onResults(results: Bundle?) {
+        note("onResults")
         finishRecording()
         onHeard(bestText(results))
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
+        note("onPartialResults")
         val text = bestText(partialResults)
         if (text.isNotEmpty()) {
             heardSomething = true
@@ -344,6 +463,7 @@ internal class KeshaListener(
     }
 
     override fun onEvent(eventType: Int, params: Bundle?) {
+        note("onEvent($eventType)")
     }
 
     private companion object {
@@ -358,5 +478,8 @@ internal class KeshaListener(
 
         /** Сколько ждать хоть какого-нибудь звука, прежде чем признать микрофон глухим. */
         const val SILENCE_WATCHDOG_MS = 12_000L
+
+        /** Сколько ждать ответа собственной пробы подключения. */
+        const val PROBE_WAIT_MS = 2_500L
     }
 }

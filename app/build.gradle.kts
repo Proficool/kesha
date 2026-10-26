@@ -18,8 +18,8 @@ android {
         applicationId = "by.colesa.kesha"
         minSdk = 21
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.7"
+        versionCode = 9
+        versionName = "1.8"
     }
 
     /**
