@@ -75,6 +75,9 @@ android {
                 "META-INF/*.kotlin_module",
                 "META-INF/*.version",
                 "kotlin-tooling-metadata.json",
+                // META-INF/com/android/build/gradle/app-metadata.properties (56 байт)
+                // сюда добавить нельзя: AGP дописывает его в APK уже после упаковки
+                // ресурсов, и apksigner из-за него выдаёт безобидное предупреждение.
                 "DebugProbesKt.bin",
                 "**/*.proto",
             )
