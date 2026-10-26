@@ -55,6 +55,9 @@ class MainActivity : Activity() {
     private var listenWatchdog: Runnable? = null
     private var speechWatchdog: Runnable? = null
 
+    /** Что вернуло системное окно распознавания: для диагностики на экране. */
+    private var windowTrace = ""
+
     private var askAfterPermission = false
     private var requestedThisRun = false
 
@@ -314,6 +317,7 @@ class MainActivity : Activity() {
             -> {
                 headline = "Не расслышал"
                 message = "Я не расслышал. Нажмите, пожалуйста, большую кнопку и скажите ещё раз."
+                detail = technical()
             }
 
             SpeechRecognizer.ERROR_NETWORK,
@@ -355,11 +359,14 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Строка для отладки на чужом телефоне: сколько служб распознавания нашлось
-     * и какие именно. Без неё причину «служба не отвечает» не отличить от «службы нет».
+     * Строка для отладки на чужом телефоне: сколько служб распознавания нашлось,
+     * какие именно пакеты и что вернуло системное окно. Без неё причину «не работает»
+     * не отличить от «службы нет» и от «окно закрылось без слов».
      */
-    private fun technical(): String =
-        "служб: ${listener.serviceCount()} — ${listener.serviceNames()}"
+    private fun technical(): String {
+        val base = "служб: ${listener.serviceCount()} — ${listener.serviceNames()}"
+        return if (windowTrace.isEmpty()) base else "$base\n$windowTrace"
+    }
 
     // --- Ответ --------------------------------------------------------------
 
@@ -548,19 +555,19 @@ class MainActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_SPEECH) return
 
-        // Состояние могло уехать, пока человека не было: он мог нажать «повторить»
-        // или начать новый вопрос. Тогда результат уже не нужен.
-        if (state != KeshaState.LISTENING) return
-
-        if (resultCode != RESULT_OK) {
-            Log.i(TAG, "системное окно закрыто без результата, код $resultCode")
-            onRecognitionFailed(SpeechRecognizer.ERROR_NO_MATCH)
-            return
-        }
-
+        // Читаем результат независимо от кода возврата: часть прошивок отдаёт слова
+        // вместе с RESULT_CANCELED, и раньше такой ответ терялся целиком.
         val variants = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
         val text = variants?.firstOrNull()?.trim().orEmpty()
-        Log.i(TAG, "системное окно вернуло текст длиной ${text.length}")
+        windowTrace = "окно: код=$resultCode, вариантов=${variants?.size ?: 0}, букв=${text.length}"
+        Log.i(TAG, "системное окно вернуло: $windowTrace")
+
+        // Отбрасываем результат только если Кеша уже думает или говорит — тогда это
+        // ответ на прошлый вопрос. Раньше здесь требовалось строго LISTENING, и
+        // распознанный вопрос молча пропадал, если система успевала пересоздать
+        // активность, пока окно распознавания было на экране.
+        if (state == KeshaState.THINKING || state == KeshaState.SPEAKING) return
+
         if (text.isEmpty()) {
             onRecognitionFailed(SpeechRecognizer.ERROR_NO_MATCH)
         } else {
