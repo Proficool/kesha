@@ -25,7 +25,35 @@ elif [ "$TASK" = "debug" ]; then
 fi
 
 cd "$ROOT"
+
+# Всегда собираем начисто. Инкрементальная сборка уже один раз выдала испорченный APK:
+# при смене числа dex-файлов в build/ оставался старый classes3.dex, и упаковщик писал
+# записи в архиве внахлёст — центральный каталог перестал соответствовать заголовкам.
+# Внешне файл выглядел нормально и отличался только размером. Дешевле собрать начисто,
+# чем ловить такое на телефоне.
+if [ "$TASK" != "clean" ]; then
+  ./gradlew clean --no-daemon --console=plain -q
+fi
+
 ./gradlew "$TASK" --no-daemon --console=plain
+
+# Проверка целостности архива: перекрывающиеся записи и битые контрольные суммы.
+if [ -f "$ROOT/app/build/outputs/apk/debug/app-debug.apk" ]; then
+  python3 - "$ROOT/app/build/outputs/apk/debug/app-debug.apk" <<'PY'
+import sys, zipfile
+path = sys.argv[1]
+z = zipfile.ZipFile(path)
+items = sorted(z.infolist(), key=lambda i: i.header_offset)
+bad = []
+for a, b in zip(items, items[1:]):
+    end = a.header_offset + 30 + len(a.filename.encode()) + len(a.extra) + a.compress_size
+    if end > b.header_offset:
+        bad.append(f"{a.filename} -> {b.filename}")
+if bad or z.testzip() is not None:
+    sys.exit(f"APK ПОВРЕЖДЁН: перекрытия={bad}, testzip={z.testzip()}")
+print(f"архив цел: {len(items)} записей, перекрытий нет")
+PY
+fi
 
 if [ -d "$ROOT/app/build/outputs/apk" ]; then
   echo
