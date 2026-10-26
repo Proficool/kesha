@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.util.Log
@@ -39,6 +40,18 @@ class MainActivity : Activity() {
     private var lastAnswer: String? = null
     private var recognitionAvailable = true
 
+    /**
+     * Запасной путь: распознавание через системный экран вместо прямого вызова службы.
+     *
+     * Прямой [SpeechRecognizer] на некоторых прошивках не подключается к службе и не
+     * присылает ни одного колбэка. Тогда остаётся второй, гораздо более старый способ —
+     * [RecognizerIntent.ACTION_RECOGNIZE_SPEECH]: система сама открывает своё окно
+     * распознавания. Появляется лишнее касание, зато работает там, где первый путь молчит.
+     *
+     * Переключаемся автоматически, без выбора со стороны человека.
+     */
+    private var activityRecognition = false
+
     private var listenWatchdog: Runnable? = null
     private var speechWatchdog: Runnable? = null
 
@@ -58,7 +71,9 @@ class MainActivity : Activity() {
 
         haptics = KeshaHaptics(this, ui.root)
         api = KeshaApi()
-        recognitionAvailable = SpeechRecognizer.isRecognitionAvailable(this)
+        // Если в прошлый раз прямой путь не сработал, сразу идём запасным:
+        // человек не должен ловить одно и то же молчание при каждом запуске.
+        activityRecognition = prefs().getBoolean(KEY_ACTIVITY_RECOGNITION, false)
 
         listener = KeshaListener(
             context = this,
@@ -145,7 +160,7 @@ class MainActivity : Activity() {
     }
 
     private fun beginListening() {
-        if (!recognitionAvailable) {
+        if (!recognitionAvailable && !activityRecognition) {
             sayQuietly(
                 "На этом телефоне не работает распознавание речи. " +
                     "Нужны службы Google. Скажите, пожалуйста, тому, кто устанавливал приложение.",
@@ -157,6 +172,13 @@ class MainActivity : Activity() {
         // Кеша замолкает, как только человек берётся спрашивать: иначе микрофон услышит его же.
         speaker.stop()
         disarmSpeechWatchdog()
+
+        if (activityRecognition) {
+            startActivityRecognition()
+            return
+        }
+
+        disarmListenWatchdog()
         dischargeAnswer()
 
         ui.showListening("")
@@ -165,6 +187,39 @@ class MainActivity : Activity() {
         Log.i(TAG, "запускаю запись")
         listener.start()
         armListenWatchdog()
+    }
+
+    /**
+     * Запасное распознавание: открываем системное окно распознавания речи.
+     *
+     * Сторож записи здесь не нужен и вреден: пока человек говорит с системным окном,
+     * наше приложение стоит в фоне, и таймер выстрелил бы посреди его фразы.
+     */
+    private fun startActivityRecognition() {
+        disarmListenWatchdog()
+        dischargeAnswer()
+
+        ui.showAnswer("Слушаю…")
+        ui.showHint("Скажите вопрос и нажмите «Готово»")
+        setState(KeshaState.LISTENING)
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ru-RU")
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Скажите ваш вопрос")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+        try {
+            Log.i(TAG, "открываю системное окно распознавания")
+            startActivityForResult(intent, REQUEST_SPEECH)
+        } catch (e: Exception) {
+            Log.w(TAG, "системное окно распознавания не открылось", e)
+            setState(KeshaState.IDLE)
+            onRecognitionFailed(SpeechRecognizer.ERROR_CLIENT)
+        }
     }
 
     private fun repeatAnswer() {
@@ -213,6 +268,20 @@ class MainActivity : Activity() {
 
         // ERROR_CLIENT приходит и при нашей собственной отмене — не пугаем человека зря.
         if (error == SpeechRecognizer.ERROR_CLIENT && state != KeshaState.LISTENING) return
+
+        // Прямой вызов службы не сработал. Молча переключаемся на системное окно и
+        // сразу пробуем снова: человек не должен нажимать кнопку второй раз из-за
+        // того, что у нас не подключилась служба.
+        if (!activityRecognition &&
+            (error == KeshaFailure.NO_SERVICE || error == KeshaFailure.NOT_RESPONDING)
+        ) {
+            activityRecognition = true
+            prefs().edit().putBoolean(KEY_ACTIVITY_RECOGNITION, true).apply()
+            Log.i(TAG, "прямой путь не сработал (код $error), службы: ${listener.serviceNames()}")
+            Log.i(TAG, "перехожу на системное окно распознавания")
+            startActivityRecognition()
+            return
+        }
 
         val headline: String
         val message: String
@@ -279,7 +348,10 @@ class MainActivity : Activity() {
         dischargeAnswer()
         ui.showAnswer(headline)
         sayQuietly(message)
-        detail?.let { ui.showHint("$message\n[$it]") }
+        // Техническую строку показываем отдельно, без человеческого текста: строка
+        // подсказки ограничена по высоте, и в паре с длинным сообщением она обрезалась —
+        // из-за этого диагностика ни разу не дошла до экрана.
+        detail?.let { ui.showHint(it) }
     }
 
     /**
@@ -470,6 +542,32 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Результат системного окна распознавания (запасной путь). */
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_SPEECH) return
+
+        // Состояние могло уехать, пока человека не было: он мог нажать «повторить»
+        // или начать новый вопрос. Тогда результат уже не нужен.
+        if (state != KeshaState.LISTENING) return
+
+        if (resultCode != RESULT_OK) {
+            Log.i(TAG, "системное окно закрыто без результата, код $resultCode")
+            onRecognitionFailed(SpeechRecognizer.ERROR_NO_MATCH)
+            return
+        }
+
+        val variants = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+        val text = variants?.firstOrNull()?.trim().orEmpty()
+        Log.i(TAG, "системное окно вернуло текст длиной ${text.length}")
+        if (text.isEmpty()) {
+            onRecognitionFailed(SpeechRecognizer.ERROR_NO_MATCH)
+        } else {
+            onHeard(text)
+        }
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions: Array<out String>,
@@ -565,8 +663,10 @@ class MainActivity : Activity() {
         const val KEY_LAST_SEEN = "lastSeen"
         const val KEY_AUTO_ASK_DONE = "autoAskDone"
         const val KEY_STATE_ANSWER = "stateAnswer"
+        const val KEY_ACTIVITY_RECOGNITION = "activityRecognition"
 
         const val REQUEST_AUDIO = 1001
+        const val REQUEST_SPEECH = 1002
 
         const val LISTEN_WATCHDOG_MS = 20_000L
         const val LISTEN_STUCK_MS = 4_000L

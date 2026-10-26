@@ -342,10 +342,10 @@ internal class KeshaListener(
         const val LANGUAGE = "ru-RU"
 
         /** Сколько раз пробовать запустить запись, пока служба не отзовётся. */
-        const val MAX_START_ATTEMPTS = 6
+        const val MAX_START_ATTEMPTS = 4
 
         /** Пауза между попытками. */
-        const val START_CONFIRM_MS = 1_200L
+        const val START_CONFIRM_MS = 1_000L
 
         /** Сколько ждать хоть какого-нибудь звука, прежде чем признать микрофон глухим. */
         const val SILENCE_WATCHDOG_MS = 12_000L

@@ -84,7 +84,7 @@ internal class KeshaUi(context: Context) {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
             setTextColor(COLOR_TEXT_SOFT)
             gravity = Gravity.CENTER
-            maxLines = 4
+            maxLines = 6
             minHeight = dp(context, 30)
             setPadding(dp(context, 4), dp(context, 2), dp(context, 4), dp(context, 10))
         }
