@@ -51,6 +51,18 @@ internal class KeshaSpeaker(
     /** Русские голоса, самые «мужские» — первыми. */
     private var voices: List<Voice> = emptyList()
 
+    /**
+     * Что за голос выбран и какие вообще есть — строкой для экрана.
+     *
+     * Пола у [Voice] в API нет, поэтому единственный способ выбрать мужской голос —
+     * увидеть имена и выбрать по ним. Для этого строка и нужна.
+     */
+    fun describeVoices(): String {
+        val chosen = voices.getOrNull(voiceIndex)?.name ?: "телефон по умолчанию"
+        val all = if (voices.isEmpty()) "нет" else voices.joinToString(",") { it.name }
+        return "голос: $chosen · есть: $all"
+    }
+
     /** Выбранный голос. -1 означает «не подменять голос телефона». */
     private var voiceIndex = -1
 
@@ -278,8 +290,15 @@ internal class KeshaSpeaker(
 
         const val SPEECH_RATE_RUSSIAN = 0.92f
 
-        /** Тон для голоса, пол которого определить не удалось. */
-        const val MALE_PITCH = 0.85f
+        /**
+         * Тон для голоса, пол которого определить не удалось.
+         *
+         * 0.85 оказалось мало: женский голос читал заметно по-женски. 0.7 звучит ниже
+         * и уже не спорит с именем Иннокентий. Это замена настоящему мужскому голосу,
+         * а не он сам: форманты так не сдвинуть, поэтому если на телефоне есть мужской
+         * русский голос, лучше выбрать его — см. строку «голос:» на экране.
+         */
+        const val MALE_PITCH = 0.7f
 
         const val MALE_BONUS = 100
         const val FEMALE_BONUS = 100

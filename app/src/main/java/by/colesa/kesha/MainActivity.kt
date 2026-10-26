@@ -547,6 +547,10 @@ class MainActivity : Activity() {
     // --- Голос --------------------------------------------------------------
 
     private fun onEngineState(engineOk: Boolean, russianOk: Boolean) {
+        // Показываем, какой голос выбран: пола у голоса в API нет, выбрать мужской
+        // можно только по имени, а имя надо сначала увидеть.
+        ui.showVoiceInfo(speaker.describeVoices())
+
         val needsVoice = !engineOk || !russianOk
         ui.setVoiceButtonVisible(needsVoice)
         if (needsVoice) {
