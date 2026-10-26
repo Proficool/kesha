@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -45,6 +46,17 @@ internal class KeshaUi(context: Context) {
     private val auraBackground: GradientDrawable
     private val repeatButton: Button
     private val voiceButton: Button
+
+    /**
+     * Номер установленной сборки в правом нижнем углу.
+     *
+     * Стоит здесь не для пожилого человека, а чтобы одним взглядом понять, какая
+     * версия реально стоит на телефоне: обновление может молча не установиться
+     * (так уже было из-за несовпадения подписи), и тогда на экране остаётся старый
+     * номер. Берём его из системы, а не из константы в коде, — иначе покажет
+     * не то, что установлено, а то, что собиралось.
+     */
+    private val versionView: TextView
 
     private var pulse: ValueAnimator? = null
 
@@ -160,6 +172,14 @@ internal class KeshaUi(context: Context) {
             setOnClickListener { onInstallVoice?.invoke() }
         }
 
+        versionView = TextView(context).apply {
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTextColor(COLOR_TEXT_SOFT)
+            alpha = 0.65f
+            gravity = Gravity.END
+            text = installedVersion(context)
+        }
+
         val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(COLOR_BACKGROUND)
@@ -194,6 +214,14 @@ internal class KeshaUi(context: Context) {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(context, 58),
             ).apply { topMargin = dp(context, 8) },
+        )
+        // Отдельной строкой, а не поверх ответа: иначе длинный ответ залезет под номер.
+        column.addView(
+            versionView,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
         )
 
         root = column
@@ -316,3 +344,25 @@ private fun roundedRect(fill: Int, radiusPx: Int, strokePx: Int, strokeColor: In
         setColor(fill)
         if (strokePx > 0) setStroke(strokePx, strokeColor)
     }
+
+/**
+ * Версия **установленного** APK в виде «сборка 1.3 (4)».
+ *
+ * Спрашиваем систему, а не берём константу из кода: смысл надписи именно в том,
+ * чтобы показать, что реально стоит на телефоне. Если обновление не встало,
+ * номер останется старым — это и есть сигнал.
+ */
+private fun installedVersion(context: Context): String = try {
+    @Suppress("DEPRECATION")
+    val info = context.packageManager.getPackageInfo(context.packageName, 0)
+    val name = info.versionName ?: "?"
+    val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        info.longVersionCode
+    } else {
+        @Suppress("DEPRECATION")
+        info.versionCode.toLong()
+    }
+    "сборка $name ($code)"
+} catch (e: Exception) {
+    "сборка неизвестна"
+}
