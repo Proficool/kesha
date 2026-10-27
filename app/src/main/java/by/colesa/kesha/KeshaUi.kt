@@ -58,8 +58,6 @@ internal class KeshaUi(context: Context) {
      */
     private val versionView: TextView
 
-    /** Диагностика: какой русский голос выбран и какие вообще есть. */
-    private val voiceView: TextView
 
     private var pulse: ValueAnimator? = null
 
@@ -183,15 +181,6 @@ internal class KeshaUi(context: Context) {
             text = installedVersion(context)
         }
 
-        // Строка с голосами нужна на время настройки: пола у голоса в API нет, поэтому
-        // выбрать мужской можно только по имени — а его надо сначала увидеть.
-        voiceView = TextView(context).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setTextColor(COLOR_TEXT_SOFT)
-            alpha = 0.65f
-            gravity = Gravity.END
-            text = ""
-        }
 
         val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -236,24 +225,12 @@ internal class KeshaUi(context: Context) {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ),
         )
-        column.addView(
-            voiceView,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ),
-        )
 
         root = column
         setState(KeshaState.IDLE)
     }
 
     /** Цвет = состояние. Серый — нажми, красный — говори, жёлтый — думаю, зелёный — отвечаю. */
-    /** Показывает, какой русский голос выбран и какие есть ещё. */
-    fun showVoiceInfo(text: String) {
-        voiceView.text = text
-    }
-
     fun setState(state: KeshaState) {
         val color = when (state) {
             KeshaState.IDLE -> COLOR_IDLE

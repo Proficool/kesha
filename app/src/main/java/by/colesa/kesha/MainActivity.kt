@@ -42,8 +42,6 @@ class MainActivity : Activity() {
     private var listenWatchdog: Runnable? = null
     private var speechWatchdog: Runnable? = null
 
-    /** Пока идёт запись, раз в полсекунды обновляет на экране состояние связи со службой. */
-    private var traceTicker: Runnable? = null
 
     private var askAfterPermission = false
     private var requestedThisRun = false
@@ -160,18 +158,17 @@ class MainActivity : Activity() {
         }
         if (!ensureAudioPermission()) return
 
-        // Кеша замолкает, как только человек берётся спрашивать: иначе микрофон услышит его же.
+        // Дуся замолкает, как только человек берётся спрашивать: иначе микрофон услышит его же.
         speaker.stop()
         disarmSpeechWatchdog()
         disarmListenWatchdog()
         dischargeAnswer()
 
         ui.showListening("")
-        ui.showHint("Говорите, я слушаю\n" + listener.statusLine())
+        ui.showHint("Говорите, я слушаю")
         setState(KeshaState.LISTENING)
         Log.i(TAG, "запускаю запись")
         listener.start()
-        startTrace()
         armListenWatchdog()
     }
 
@@ -209,7 +206,7 @@ class MainActivity : Activity() {
         // Показываем распознанный вопрос крупно: человек видит, что его поняли,
         // и эти 2–3 секунды ожидания не выглядят поломкой.
         ui.showAnswer(text)
-        ui.showHint("Спрашиваю у Кеши…")
+        ui.showHint("Спрашиваю у Дуси…")
         setState(KeshaState.THINKING)
 
         val question = text
@@ -222,24 +219,23 @@ class MainActivity : Activity() {
         // ERROR_CLIENT приходит и при нашей собственной отмене — не пугаем человека зря.
         if (error == SpeechRecognizer.ERROR_CLIENT && state != KeshaState.LISTENING) return
 
+        // Технические подробности — в журнал, а не на экран: человеку они ни к чему,
+        // но если что-то снова сломается, без них опять придётся гадать.
+        Log.w(TAG, "отказ распознавания $error: ${listener.statusLine()}")
+
         val headline: String
         val message: String
-        // Техническая строка показывается только на экране: вслух её читать незачем,
-        // а вот понять по ней, что за служба стоит на телефоне, можно сразу.
-        var detail: String? = null
         when (error) {
             KeshaFailure.NO_SERVICE -> {
                 headline = "Микрофон не работает"
                 message = "На этом телефоне нет службы распознавания речи. " +
                     "Скажите, пожалуйста, тому, кто устанавливал приложение."
-                detail = technical()
             }
 
             KeshaFailure.NOT_RESPONDING -> {
                 headline = "Микрофон не отвечает"
                 message = "Служба распознавания речи не отвечает. " +
                     "Попробуйте, пожалуйста, ещё раз или перезапустите приложение."
-                detail = technical()
             }
 
             KeshaFailure.SILENT_MIC -> {
@@ -251,9 +247,8 @@ class MainActivity : Activity() {
             SpeechRecognizer.ERROR_NO_MATCH,
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
             -> {
-                headline = "Не расслышал"
-                message = "Я не расслышал. Нажмите, пожалуйста, большую кнопку и скажите ещё раз."
-                detail = technical()
+                headline = "Не расслышала"
+                message = "Я не расслышала. Нажмите, пожалуйста, большую кнопку и скажите ещё раз."
             }
 
             SpeechRecognizer.ERROR_NETWORK,
@@ -288,35 +283,6 @@ class MainActivity : Activity() {
         dischargeAnswer()
         ui.showAnswer(headline)
         sayQuietly(message)
-        // Техническую строку показываем отдельно, без человеческого текста: строка
-        // подсказки ограничена по высоте, и в паре с длинным сообщением она обрезалась —
-        // из-за этого диагностика ни разу не дошла до экрана.
-        detail?.let { ui.showHint(it) }
-    }
-
-    /**
-     * Строка для отладки на чужом телефоне: сколько служб распознавания нашлось
-     * и какие именно пакеты. Без неё причину «не работает» не отличить от «службы нет».
-     */
-    private fun technical(): String = listener.statusLine()
-
-    /** Обновляет диагностику на экране, пока идёт запись: иначе причина снова утонет. */
-    private fun startTrace() {
-        stopTrace()
-        val runnable = object : Runnable {
-            override fun run() {
-                if (state != KeshaState.LISTENING) return
-                ui.showHint("Говорите, я слушаю\n" + listener.statusLine())
-                main.postDelayed(this, 500L)
-            }
-        }
-        traceTicker = runnable
-        main.postDelayed(runnable, 500L)
-    }
-
-    private fun stopTrace() {
-        traceTicker?.let { main.removeCallbacks(it) }
-        traceTicker = null
     }
 
     // --- Ответ --------------------------------------------------------------
@@ -354,7 +320,6 @@ class MainActivity : Activity() {
 
     private fun setState(next: KeshaState) {
         state = next
-        if (next != KeshaState.LISTENING) stopTrace()
         ui.setState(next)
         // Раздел 5: экран не гаснет, пока идёт разговор.
         keepScreenOn(next != KeshaState.IDLE)
@@ -373,7 +338,7 @@ class MainActivity : Activity() {
         ui.setRepeatEnabled(false)
     }
 
-    /** Говорит фразу, не переводя кнопку в зелёное состояние: это подсказка, а не ответ Кеши. */
+    /** Говорит фразу, не переводя кнопку в зелёное состояние: это подсказка, а не ответ Дуси. */
     private fun sayQuietly(message: String) {
         if (state != KeshaState.IDLE) setState(KeshaState.IDLE)
         ui.showHint(message)
@@ -547,10 +512,6 @@ class MainActivity : Activity() {
     // --- Голос --------------------------------------------------------------
 
     private fun onEngineState(engineOk: Boolean, russianOk: Boolean) {
-        // Показываем, какой голос выбран: пола у голоса в API нет, выбрать мужской
-        // можно только по имени, а имя надо сначала увидеть.
-        ui.showVoiceInfo(speaker.describeVoices())
-
         val needsVoice = !engineOk || !russianOk
         ui.setVoiceButtonVisible(needsVoice)
         if (needsVoice) {
@@ -607,7 +568,7 @@ class MainActivity : Activity() {
         const val LISTEN_STUCK_MS = 4_000L
         const val GREETING_GAP_MS = 15 * 60 * 1000L
 
-        const val GREETING = "Здравствуйте! Я Кеша. Нажмите большую кнопку и спросите меня."
+        const val GREETING = "Здравствуйте! Я Дуся. Нажмите большую кнопку и спросите меня."
         const val ACTION_TTS_SETTINGS = "com.android.settings.TTS_SETTINGS"
     }
 }
